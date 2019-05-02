@@ -83,7 +83,7 @@ func (r *Replacer) Reset() {}
 // Because the transforming is taken by part of source data with transform.Reader
 // the Replacer is carefull for boundary of current src buffer and next one.
 // When end of src matches for part of old and atEOF is false
-// the Replacer stops to transform and remain len(src) % len(old) bytes for next transforming.
+// the Replacer stops to transform and remain the matched bytes for next transforming.
 // If Replacer remained boundary bytes, nSrc will be less than len(src)
 // and returns transform.ErrShortSrc.
 func (r *Replacer) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err error) {
@@ -108,11 +108,12 @@ func (r *Replacer) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err e
 		if i == -1 { // not found
 			n := len(src[nSrc:])
 
-			boundary := len(src[nSrc:]) % len(r.old)
-			if !atEOF && boundary != 0 && bytes.HasPrefix(r.old, src[len(src)-boundary:]) {
-				// exclude boundary bytes because they may match r.old with next several bytes
-				n -= boundary
-				err = transform.ErrShortDst
+			if !atEOF {
+				if m := overwrapWidth(src[nSrc:], r.old); m > 0 {
+					// exclude m bytes because they may match r.old with next several bytes
+					n -= m
+					err = transform.ErrShortDst
+				}
 			}
 
 			if len(dst[nDst:]) < n {
@@ -138,6 +139,21 @@ func (r *Replacer) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err e
 		nDst += copy(dst[nDst:], r.new)
 		nSrc += i + len(r.old)
 	}
+}
+
+// overwrapWidth returns the length of longest match of end of a and start of b.
+// Returns 0 if no match.
+func overwrapWidth(a, b []byte) int {
+	w := len(a)
+	if w > len(b) {
+		w = len(b)
+	}
+	for ; w > 0; w-- {
+		if bytes.Equal(a[len(a)-w:], b[:w]) {
+			return w
+		}
+	}
+	return 0
 }
 
 // Replace returns a Replacer with out history.
