@@ -109,6 +109,16 @@ func TestReplacer_Transform(t *testing.T) {
 			nSrc:     10,
 			expected: []byte(`ABCdefgABC`),
 		},
+		{
+			old:      []byte(`abc`),
+			new:      []byte(`ABC`),
+			dst:      make([]byte, 2),
+			src:      []byte(`abc`),
+			atEOF:    false,
+			nDst:     2,
+			nSrc:     3,
+			expected: []byte(`AB`),
+		},
 		// tests for nil and empty bytes
 		{
 			old:      nil,
@@ -301,6 +311,12 @@ func TestReplacerWithReader(t *testing.T) {
 			old:      []byte(`abc`),
 			new:      []byte(`ABC`),
 			expected: append([]byte(`aaaa`), bytes.Repeat([]byte("ABCdefg"), 5000)...),
+		},
+		{
+			r:        strings.NewReader("aaabc"),
+			old:      []byte(`abc`),
+			new:      bytes.Repeat([]byte("A"), 5000),
+			expected: append([]byte(`aa`), bytes.Repeat([]byte("A"), 5000)...),
 		},
 	}
 

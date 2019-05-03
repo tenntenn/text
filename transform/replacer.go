@@ -57,6 +57,7 @@ func (h *ReplaceHistory) At(index int) (src0, src1, dst0, dst1 int) {
 type Replacer struct {
 	old, new []byte
 	history  *ReplaceHistory
+	predst   []byte
 }
 
 var _ transform.Transformer = (*Replacer)(nil)
@@ -75,7 +76,9 @@ func NewReplacer(old, new []byte, history *ReplaceHistory) *Replacer {
 }
 
 // Reset implements transform.Transformer.Reset.
-func (r *Replacer) Reset() {}
+func (r *Replacer) Reset() {
+	r.predst = nil
+}
 
 // Transform implements transform.Transformer.Transform.
 // Transform replaces old to new in src and copy to dst.
@@ -88,6 +91,16 @@ func (r *Replacer) Reset() {}
 // and returns transform.ErrShortSrc.
 func (r *Replacer) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err error) {
 
+	if len(r.predst) > 0 {
+		n := copy(dst, r.predst)
+		nDst += n
+		r.predst = r.predst[n:]
+		if len(r.predst) > 0 {
+			err = transform.ErrShortDst
+			return
+		}
+	}
+
 	if len(src) < len(r.old) {
 		if !atEOF {
 			err = transform.ErrShortSrc
@@ -96,7 +109,7 @@ func (r *Replacer) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err e
 	}
 
 	if len(r.old) == 0 {
-		n := copy(dst, src)
+		n := copy(dst[nDst:], src)
 		nDst += n
 		nSrc += n
 		return
@@ -128,16 +141,28 @@ func (r *Replacer) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err e
 			return
 		}
 
-		if len(dst[nDst:]) < i+len(r.new) {
+		if len(dst[nDst:]) < i {
 			if nDst == 0 {
 				err = transform.ErrShortDst
 			}
 			return
 		}
-		nDst += copy(dst[nDst:], src[nSrc:nSrc+i])
-		r.history.add(nSrc+i, nSrc+i+len(r.old), nDst, nDst+len(r.new))
-		nDst += copy(dst[nDst:], r.new)
-		nSrc += i + len(r.old)
+		n := copy(dst[nDst:], src[nSrc:nSrc+i])
+		nDst += n
+		nSrc += n
+
+		// Copy new
+		r.history.add(nSrc, nSrc+len(r.old), nDst, nDst+len(r.new))
+		n = copy(dst[nDst:], r.new)
+		nDst += n
+		nSrc += len(r.old)
+		if n < len(r.new) {
+			r.predst = r.new[n:]
+			if nDst == 0 {
+				err = transform.ErrShortDst
+			}
+			return
+		}
 	}
 }
 
