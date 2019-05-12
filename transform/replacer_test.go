@@ -158,6 +158,17 @@ func TestReplacer_Transform(t *testing.T) {
 			nSrc:     2,
 			expected: []byte(`ab`),
 		},
+		{
+			old:      []byte(`abc`),
+			new:      []byte(`ABC`),
+			dst:      make([]byte, 2),
+			src:      []byte(`xxxabc`),
+			atEOF:    false,
+			nDst:     2,
+			nSrc:     2,
+			expected: []byte(`xx`),
+			hasErr:   true,
+		},
 		// tests for nil and empty bytes
 		{
 			old:      nil,
@@ -542,6 +553,26 @@ func TestReplacer_TransformFlow(t *testing.T) {
 
 // TestReplacerWithReader is a test for transform.Replace with transform.Reader.
 func TestReplacerWithReader(t *testing.T) {
+	newReader := func(orig io.Reader, tf transform.Transformer) io.Reader {
+		return transform.NewReader(orig, tf)
+	}
+	testReplacerWithReader(t, newReader)
+}
+
+// TestReplacerWithWriter is a test for transform.Replace with transform.Writer.
+func TestReplacerWithWriter(t *testing.T) {
+	newReader := func(orig io.Reader, tf transform.Transformer) io.Reader {
+		r, w := io.Pipe()
+		go func() {
+			_, err := io.Copy(transform.NewWriter(w, tf), orig)
+			w.CloseWithError(err)
+		}()
+		return r
+	}
+	testReplacerWithReader(t, newReader)
+}
+
+func testReplacerWithReader(t *testing.T, newReader func(io.Reader, transform.Transformer) io.Reader) {
 	data := []struct {
 		// input
 		r        io.Reader
@@ -624,7 +655,7 @@ func TestReplacerWithReader(t *testing.T) {
 	for i, d := range data {
 		history := NewReplaceHistory()
 		r := NewReplacer(d.old, d.new, history)
-		actual, err := ioutil.ReadAll(transform.NewReader(d.r, r))
+		actual, err := ioutil.ReadAll(newReader(d.r, r))
 		switch {
 		case d.hasErr && err == nil:
 			t.Errorf("data[%d] must occur an error but not occured", i)

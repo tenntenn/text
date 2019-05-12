@@ -161,15 +161,14 @@ func (r *Replacer) transform(dst, src []byte, atEOF bool) (nDst, nSrc int, presr
 			return
 		}
 
-		if len(dst[nDst:]) < i {
-			if nDst == 0 {
-				err = transform.ErrShortDst
-			}
-			return
-		}
+		// Copy to i
 		n := copy(dst[nDst:], src[nSrc:nSrc+i])
 		nDst += n
 		nSrc += n
+		if n < i {
+			err = transform.ErrShortDst
+			return
+		}
 
 		// Copy new
 		r.history.add(r.offSrc+nSrc, r.offSrc+nSrc+len(r.old), r.offDst+nDst, r.offDst+nDst+len(r.new))
