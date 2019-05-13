@@ -2,6 +2,7 @@ package transform_test
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
@@ -12,6 +13,11 @@ import (
 
 	. "github.com/tenntenn/text/transform"
 )
+
+type history struct {
+	src0, src1 []int
+	dst0, dst1 []int
+}
 
 // ExampleReplaceAll is an example of ReplaceAll.
 func ExampleReplaceTable() {
@@ -246,13 +252,91 @@ func TestReplacer_Transform(t *testing.T) {
 	}
 }
 
-// TestReplacerWithReader is a test for transform.Replace with transform.Reader.
-func TestReplacerWithReader(t *testing.T) {
-	type history struct {
-		src0, src1 []int
-		dst0, dst1 []int
+func TestReplacer_TransformFlow(t *testing.T) {
+	type flow []struct {
+		dst, src []byte
+		atEOF    bool
+
+		nSrc int
+		out  []byte // nDst == len(out)
+		err  error
+	}
+	cases := []struct {
+		old, new []byte
+		flow     flow
+		history  *history
+	}{
+		{
+			old: []byte(`abc`),
+			new: []byte(`R`),
+			flow: flow{
+				{
+					dst:   make([]byte, 5),
+					src:   []byte(`abcde`),
+					atEOF: false,
+					out:   []byte(`Rde`),
+					nSrc:  5,
+					err:   nil,
+				},
+				{
+					dst:   make([]byte, 5),
+					src:   []byte(`fabcd`),
+					atEOF: true,
+					out:   []byte(`fRd`),
+					nSrc:  5,
+					err:   nil,
+				},
+			},
+			history: &history{
+				src0: []int{0, 6},
+				src1: []int{3, 9},
+				dst0: []int{0, 4},
+				dst1: []int{1, 5},
+			},
+		},
 	}
 
+	for i, c := range cases {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			history := NewReplaceHistory()
+			r := NewReplacer(c.old, c.new, history)
+			for _, f := range c.flow {
+				nDst, nSrc, err := r.Transform(f.dst, f.src, f.atEOF)
+				if nDst != len(f.out) {
+					t.Errorf("the nDst is expected %d but %d", len(f.out), nDst)
+				}
+				if !bytes.Equal(f.dst[:nDst], f.out) {
+					t.Errorf("the dst is expected %v but %v", f.out, f.dst[:nDst])
+				}
+				if nSrc != f.nSrc {
+					t.Errorf("the nSrc is expected %d but %d", f.nSrc, nSrc)
+				}
+				if err != f.err {
+					t.Errorf("the err is expected %v but %v", f.err, err)
+				}
+			}
+
+			for j := range c.history.src0 {
+				src0, src1, dst0, dst1 := history.At(j)
+				if c.history.src0[j] != src0 {
+					t.Errorf("data[%d]'s expected src0 of history[%d] is %d but %d", i, j, c.history.src0[j], src0)
+				}
+				if c.history.src1[j] != src1 {
+					t.Errorf("data[%d]'s expected src1 of history[%d] is %d but %d", i, j, c.history.src1[j], src1)
+				}
+				if c.history.dst0[j] != dst0 {
+					t.Errorf("data[%d]'s expected dst0 of history[%d] is %d but %d", i, j, c.history.dst0[j], dst0)
+				}
+				if c.history.dst1[j] != dst1 {
+					t.Errorf("data[%d]'s expected dst1 of history[%d] is %d but %d", i, j, c.history.dst1[j], dst1)
+				}
+			}
+		})
+	}
+}
+
+// TestReplacerWithReader is a test for transform.Replace with transform.Reader.
+func TestReplacerWithReader(t *testing.T) {
 	data := []struct {
 		// input
 		r        io.Reader

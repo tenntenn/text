@@ -58,6 +58,9 @@ type Replacer struct {
 	old, new []byte
 	history  *ReplaceHistory
 	predst   []byte
+	// offDst and offSrc is the length of transformed bytes until the current Transform call.
+	offDst int
+	offSrc int
 }
 
 var _ transform.Transformer = (*Replacer)(nil)
@@ -78,6 +81,8 @@ func NewReplacer(old, new []byte, history *ReplaceHistory) *Replacer {
 // Reset implements transform.Transformer.Reset.
 func (r *Replacer) Reset() {
 	r.predst = nil
+	r.offDst = 0
+	r.offSrc = 0
 }
 
 // Transform implements transform.Transformer.Transform.
@@ -89,8 +94,16 @@ func (r *Replacer) Reset() {
 // the Replacer stops to transform and remain the matched bytes for next transforming.
 // If Replacer remained boundary bytes, nSrc will be less than len(src)
 // and returns transform.ErrShortSrc.
-func (r *Replacer) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err error) {
+func (r *Replacer) Transform(dst, src []byte, atEOF bool) (int, int, error) {
+	nDst, nSrc, err := r.transform(dst, src, atEOF)
 
+	r.offDst += nDst
+	r.offSrc += nSrc
+
+	return nDst, nSrc, err
+}
+
+func (r *Replacer) transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err error) {
 	if len(r.predst) > 0 {
 		n := copy(dst, r.predst)
 		nDst += n
@@ -152,7 +165,7 @@ func (r *Replacer) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err e
 		nSrc += n
 
 		// Copy new
-		r.history.add(nSrc, nSrc+len(r.old), nDst, nDst+len(r.new))
+		r.history.add(r.offSrc+nSrc, r.offSrc+nSrc+len(r.old), r.offDst+nDst, r.offDst+nDst+len(r.new))
 		n = copy(dst[nDst:], r.new)
 		nDst += n
 		nSrc += len(r.old)
