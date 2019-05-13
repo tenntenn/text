@@ -58,6 +58,7 @@ type Replacer struct {
 	old, new []byte
 	history  *ReplaceHistory
 	predst   []byte
+	presrc   []byte // presrc always points subslice of old.
 	// offDst and offSrc is the length of transformed bytes until the current Transform call.
 	offDst int
 	offSrc int
@@ -81,6 +82,7 @@ func NewReplacer(old, new []byte, history *ReplaceHistory) *Replacer {
 // Reset implements transform.Transformer.Reset.
 func (r *Replacer) Reset() {
 	r.predst = nil
+	r.presrc = nil
 	r.offDst = 0
 	r.offSrc = 0
 }
@@ -95,15 +97,26 @@ func (r *Replacer) Reset() {
 // If Replacer remained boundary bytes, nSrc will be less than len(src)
 // and returns transform.ErrShortSrc.
 func (r *Replacer) Transform(dst, src []byte, atEOF bool) (int, int, error) {
-	nDst, nSrc, err := r.transform(dst, src, atEOF)
+	psrc := make([]byte, len(r.presrc)+len(src))
+	copy(psrc, r.presrc)
+	copy(psrc[len(r.presrc):], src)
+	nDst, nSrc, presrc, err := r.transform(dst, psrc, atEOF)
 
 	r.offDst += nDst
-	r.offSrc += nSrc
+	r.offSrc += nSrc - len(presrc)
+
+	if nSrc < len(r.presrc) {
+		r.presrc = r.presrc[nSrc:]
+		nSrc = 0
+	} else {
+		nSrc -= len(r.presrc)
+		r.presrc = presrc
+	}
 
 	return nDst, nSrc, err
 }
 
-func (r *Replacer) transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err error) {
+func (r *Replacer) transform(dst, src []byte, atEOF bool) (nDst, nSrc int, presrc []byte, err error) {
 	if len(r.predst) > 0 {
 		n := copy(dst, r.predst)
 		nDst += n
@@ -112,13 +125,6 @@ func (r *Replacer) transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err e
 			err = transform.ErrShortDst
 			return
 		}
-	}
-
-	if len(src) < len(r.old) {
-		if !atEOF {
-			err = transform.ErrShortSrc
-		}
-		return
 	}
 
 	if len(r.old) == 0 {
@@ -134,23 +140,24 @@ func (r *Replacer) transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err e
 		if i == -1 { // not found
 			n := len(src[nSrc:])
 
+			var w int
 			if !atEOF {
-				if m := overwrapWidth(src[nSrc:], r.old); m > 0 {
-					// exclude m bytes because they may match r.old with next several bytes
-					n -= m
-					err = transform.ErrShortDst
+				if w = overwrapWidth(src[nSrc:], r.old); w > 0 {
+					// exclude w bytes because they may match r.old with next several bytes
+					n -= w
+					err = transform.ErrShortSrc
 				}
 			}
 
-			if len(dst[nDst:]) < n {
-				if nDst == 0 {
-					err = transform.ErrShortDst
-				}
-				return
-			}
 			m := copy(dst[nDst:], src[nSrc:nSrc+n])
 			nDst += m
 			nSrc += m
+			if m < n {
+				err = transform.ErrShortDst
+				return
+			}
+			presrc = r.old[:w]
+			nSrc += w
 			return
 		}
 
@@ -171,9 +178,7 @@ func (r *Replacer) transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err e
 		nSrc += len(r.old)
 		if n < len(r.new) {
 			r.predst = r.new[n:]
-			if nDst == 0 {
-				err = transform.ErrShortDst
-			}
+			err = transform.ErrShortDst
 			return
 		}
 	}
