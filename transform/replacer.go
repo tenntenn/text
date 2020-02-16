@@ -55,6 +55,7 @@ func (h *ReplaceHistory) At(index int) (src0, src1, dst0, dst1 int) {
 // Replacer replaces a part of byte data which matches given pattern to other pattern.
 // It implements transform.Transformer.
 type Replacer struct {
+	transform.NopResetter
 	old, new []byte
 	history  *ReplaceHistory
 }
@@ -73,9 +74,6 @@ func NewReplacer(old, new []byte, history *ReplaceHistory) *Replacer {
 		history: history,
 	}
 }
-
-// Reset implements transform.Transformer.Reset.
-func (r *Replacer) Reset() {}
 
 // Transform implements transform.Transformer.Transform.
 // Transform replaces old to new in src and copy to dst.
@@ -112,7 +110,7 @@ func (r *Replacer) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err e
 			if !atEOF && boundary != 0 && bytes.HasPrefix(r.old, src[len(src)-boundary:]) {
 				// exclude boundary bytes because they may match r.old with next several bytes
 				n -= boundary
-				err = transform.ErrShortDst
+				err = transform.ErrShortSrc
 			}
 
 			if len(dst[nDst:]) < n {
