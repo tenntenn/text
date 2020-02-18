@@ -55,6 +55,7 @@ func (h *ReplaceHistory) At(index int) (src0, src1, dst0, dst1 int) {
 // Replacer replaces a part of byte data which matches given pattern to other pattern.
 // It implements transform.Transformer.
 type Replacer struct {
+	transform.NopResetter
 	old, new []byte
 	history  *ReplaceHistory
 	predst   []byte
