@@ -58,6 +58,11 @@ type Replacer struct {
 	transform.NopResetter
 	old, new []byte
 	history  *ReplaceHistory
+	predst   []byte
+	presrc   []byte // presrc always points subslice of old.
+	// offDst and offSrc is the length of transformed bytes until the current Transform call.
+	offDst int
+	offSrc int
 }
 
 var _ transform.Transformer = (*Replacer)(nil)
@@ -75,26 +80,56 @@ func NewReplacer(old, new []byte, history *ReplaceHistory) *Replacer {
 	}
 }
 
+// Reset implements transform.Transformer.Reset.
+func (r *Replacer) Reset() {
+	r.predst = nil
+	r.presrc = nil
+	r.offDst = 0
+	r.offSrc = 0
+}
+
 // Transform implements transform.Transformer.Transform.
 // Transform replaces old to new in src and copy to dst.
 //
 // Because the transforming is taken by part of source data with transform.Reader
 // the Replacer is carefull for boundary of current src buffer and next one.
 // When end of src matches for part of old and atEOF is false
-// the Replacer stops to transform and remain len(src) % len(old) bytes for next transforming.
+// the Replacer stops to transform and remain the matched bytes for next transforming.
 // If Replacer remained boundary bytes, nSrc will be less than len(src)
 // and returns transform.ErrShortSrc.
-func (r *Replacer) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err error) {
+func (r *Replacer) Transform(dst, src []byte, atEOF bool) (int, int, error) {
+	psrc := make([]byte, len(r.presrc)+len(src))
+	copy(psrc, r.presrc)
+	copy(psrc[len(r.presrc):], src)
+	nDst, nSrc, presrc, err := r.transform(dst, psrc, atEOF)
 
-	if len(src) < len(r.old) {
-		if !atEOF {
-			err = transform.ErrShortSrc
+	r.offDst += nDst
+	r.offSrc += nSrc - len(presrc)
+
+	if nSrc < len(r.presrc) {
+		r.presrc = r.presrc[nSrc:]
+		nSrc = 0
+	} else {
+		nSrc -= len(r.presrc)
+		r.presrc = presrc
+	}
+
+	return nDst, nSrc, err
+}
+
+func (r *Replacer) transform(dst, src []byte, atEOF bool) (nDst, nSrc int, presrc []byte, err error) {
+	if len(r.predst) > 0 {
+		n := copy(dst, r.predst)
+		nDst += n
+		r.predst = r.predst[n:]
+		if len(r.predst) > 0 {
+			err = transform.ErrShortDst
+			return
 		}
-		return
 	}
 
 	if len(r.old) == 0 {
-		n := copy(dst, src)
+		n := copy(dst[nDst:], src)
 		nDst += n
 		nSrc += n
 		return
@@ -106,36 +141,62 @@ func (r *Replacer) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err e
 		if i == -1 { // not found
 			n := len(src[nSrc:])
 
-			boundary := len(src[nSrc:]) % len(r.old)
-			if !atEOF && boundary != 0 && bytes.HasPrefix(r.old, src[len(src)-boundary:]) {
-				// exclude boundary bytes because they may match r.old with next several bytes
-				n -= boundary
-				err = transform.ErrShortSrc
+			var w int
+			if !atEOF {
+				if w = overwrapWidth(src[nSrc:], r.old); w > 0 {
+					// exclude w bytes because they may match r.old with next several bytes
+					n -= w
+					err = transform.ErrShortSrc
+				}
 			}
 
-			if len(dst[nDst:]) < n {
-				if nDst == 0 {
-					err = transform.ErrShortDst
-				}
-				return
-			}
 			m := copy(dst[nDst:], src[nSrc:nSrc+n])
 			nDst += m
 			nSrc += m
+			if m < n {
+				err = transform.ErrShortDst
+				return
+			}
+			presrc = r.old[:w]
+			nSrc += w
 			return
 		}
 
-		if len(dst[nDst:]) < i+len(r.new) {
-			if nDst == 0 {
-				err = transform.ErrShortDst
-			}
+		// Copy to i
+		n := copy(dst[nDst:], src[nSrc:nSrc+i])
+		nDst += n
+		nSrc += n
+		if n < i {
+			err = transform.ErrShortDst
 			return
 		}
-		nDst += copy(dst[nDst:], src[nSrc:nSrc+i])
-		r.history.add(nSrc+i, nSrc+i+len(r.old), nDst, nDst+len(r.new))
-		nDst += copy(dst[nDst:], r.new)
-		nSrc += i + len(r.old)
+
+		// Copy new
+		r.history.add(r.offSrc+nSrc, r.offSrc+nSrc+len(r.old), r.offDst+nDst, r.offDst+nDst+len(r.new))
+		n = copy(dst[nDst:], r.new)
+		nDst += n
+		nSrc += len(r.old)
+		if n < len(r.new) {
+			r.predst = r.new[n:]
+			err = transform.ErrShortDst
+			return
+		}
 	}
+}
+
+// overwrapWidth returns the length of longest match of end of a and start of b.
+// Returns 0 if no match.
+func overwrapWidth(a, b []byte) int {
+	w := len(a)
+	if w > len(b) {
+		w = len(b)
+	}
+	for ; w > 0; w-- {
+		if bytes.Equal(a[len(a)-w:], b[:w]) {
+			return w
+		}
+	}
+	return 0
 }
 
 // Replace returns a Replacer with out history.
