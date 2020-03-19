@@ -55,7 +55,7 @@ func (r *Replacer) Transform(dst, src []byte, atEOF bool) (int, int, error) {
 
 	_src := src
 	if len(r.preSrc) > 0 {
-		_src := make([]byte, len(r.preSrc)+len(src))
+		_src = make([]byte, len(r.preSrc)+len(src))
 		copy(_src, r.preSrc)
 		copy(_src[len(r.preSrc):], src)
 	}
