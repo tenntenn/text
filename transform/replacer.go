@@ -7,58 +7,13 @@ import (
 	"golang.org/x/text/transform"
 )
 
-// ReplaceHistory represents histories of replacing with Replacer.
-type ReplaceHistory struct {
-	src0, src1 []int
-	dst0, dst1 []int
-}
-
-// NewReplaceHistory creates a new ReplaceHistory.
-func NewReplaceHistory() *ReplaceHistory {
-	return &ReplaceHistory{}
-}
-
-func (h *ReplaceHistory) add(src0, src1, dst0, dst1 int) {
-	// ignore receiver is nil
-	if h == nil {
-		return
-	}
-
-	h.src0 = append(h.src0, src0)
-	h.src1 = append(h.src1, src1)
-	h.dst0 = append(h.dst0, dst0)
-	h.dst1 = append(h.dst1, dst1)
-}
-
-// Iterate iterates histories by replacing order.
-// This method can call with a nil receiver.
-// The arguments of f represent range of replacing, from src[src0:src1] to dst[dst0:dst1].
-// if f returns false Iterate will stop the iteration.
-func (h *ReplaceHistory) Iterate(f func(src0, src1, dst0, dst1 int) bool) {
-	// ignore receiver is nil
-	if h == nil {
-		return
-	}
-
-	for i := range h.src0 {
-		if !f(h.src0[i], h.src1[i], h.dst0[i], h.dst1[i]) {
-			break
-		}
-	}
-}
-
-// At returns a history of given index.
-func (h *ReplaceHistory) At(index int) (src0, src1, dst0, dst1 int) {
-	return h.src0[index], h.src1[index], h.dst0[index], h.dst1[index]
-}
-
 // Replacer replaces a part of byte data which matches given pattern to other pattern.
 // It implements transform.Transformer.
 type Replacer struct {
 	old, new []byte
 	history  *ReplaceHistory
-	predst   []byte
-	presrc   []byte // presrc always points subslice of old.
+	preDst   []byte
+	preSrc   []byte // preSrc always points subslice of old.
 	// offDst and offSrc is the length of transformed bytes until the current Transform call.
 	offDst int
 	offSrc int
@@ -81,8 +36,8 @@ func NewReplacer(old, new []byte, history *ReplaceHistory) *Replacer {
 
 // Reset implements transform.Transformer.Reset.
 func (r *Replacer) Reset() {
-	r.predst = nil
-	r.presrc = nil
+	r.preDst = nil
+	r.preSrc = nil
 	r.offDst = 0
 	r.offSrc = 0
 }
@@ -97,31 +52,35 @@ func (r *Replacer) Reset() {
 // If Replacer remained boundary bytes, nSrc will be less than len(src)
 // and returns transform.ErrShortSrc.
 func (r *Replacer) Transform(dst, src []byte, atEOF bool) (int, int, error) {
-	psrc := make([]byte, len(r.presrc)+len(src))
-	copy(psrc, r.presrc)
-	copy(psrc[len(r.presrc):], src)
-	nDst, nSrc, presrc, err := r.transform(dst, psrc, atEOF)
 
+	_src := src
+	if len(r.preSrc) > 0 {
+		_src = make([]byte, len(r.preSrc)+len(src))
+		copy(_src, r.preSrc)
+		copy(_src[len(r.preSrc):], src)
+	}
+
+	nDst, nSrc, preSrc, err := r.transform(dst, _src, atEOF)
 	r.offDst += nDst
-	r.offSrc += nSrc - len(presrc)
+	r.offSrc += nSrc - len(preSrc)
 
-	if nSrc < len(r.presrc) {
-		r.presrc = r.presrc[nSrc:]
+	if nSrc < len(r.preSrc) {
+		r.preSrc = r.preSrc[nSrc:]
 		nSrc = 0
 	} else {
-		nSrc -= len(r.presrc)
-		r.presrc = presrc
+		nSrc -= len(r.preSrc)
+		r.preSrc = preSrc
 	}
 
 	return nDst, nSrc, err
 }
 
-func (r *Replacer) transform(dst, src []byte, atEOF bool) (nDst, nSrc int, presrc []byte, err error) {
-	if len(r.predst) > 0 {
-		n := copy(dst, r.predst)
+func (r *Replacer) transform(dst, src []byte, atEOF bool) (nDst, nSrc int, preSrc []byte, err error) {
+	if len(r.preDst) > 0 {
+		n := copy(dst, r.preDst)
 		nDst += n
-		r.predst = r.predst[n:]
-		if len(r.predst) > 0 {
+		r.preDst = r.preDst[n:]
+		if len(r.preDst) > 0 {
 			err = transform.ErrShortDst
 			return
 		}
@@ -142,7 +101,8 @@ func (r *Replacer) transform(dst, src []byte, atEOF bool) (nDst, nSrc int, presr
 
 			var w int
 			if !atEOF {
-				if w = overwrapWidth(src[nSrc:], r.old); w > 0 {
+				w = overlapWidth(src[nSrc:], r.old)
+				if w > 0 {
 					// exclude w bytes because they may match r.old with next several bytes
 					n -= w
 					err = transform.ErrShortSrc
@@ -156,7 +116,7 @@ func (r *Replacer) transform(dst, src []byte, atEOF bool) (nDst, nSrc int, presr
 				err = transform.ErrShortDst
 				return
 			}
-			presrc = r.old[:w]
+			preSrc = r.old[:w]
 			nSrc += w
 			return
 		}
@@ -176,16 +136,16 @@ func (r *Replacer) transform(dst, src []byte, atEOF bool) (nDst, nSrc int, presr
 		nDst += n
 		nSrc += len(r.old)
 		if n < len(r.new) {
-			r.predst = r.new[n:]
+			r.preDst = r.new[n:]
 			err = transform.ErrShortDst
 			return
 		}
 	}
 }
 
-// overwrapWidth returns the length of longest match of end of a and start of b.
+// overlapWidth returns the length of longest match of end of a and start of b.
 // Returns 0 if no match.
-func overwrapWidth(a, b []byte) int {
+func overlapWidth(a, b []byte) int {
 	w := len(a)
 	if w > len(b) {
 		w = len(b)
